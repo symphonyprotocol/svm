@@ -14,6 +14,8 @@ func typeOf(val luaValue) LuaType {
 		return LuaTypeNumber
 	case string:
 		return LuaTypeString
+	case *luaTable:
+		return LuaTypeTable
 	default:
 		panic("todo!")
 	}
@@ -57,20 +59,21 @@ func (ls *luaStack) get(idx int) luaValue {
 	if tmpIdx < 0 {
 		return nil
 	}
-	top := ls.topIndex()
-	if tmpIdx > top {
-		return nil
-	}
 	return ls.data[tmpIdx]
 }
 
 func (ls *luaStack) set(idx int, val luaValue) {
 	tmpIdx := ls.absIndex(idx)
 	top := ls.topIndex()
-	if tmpIdx > top || tmpIdx < 0 {
+	if tmpIdx >= 0 && tmpIdx <= top+1 {
+		if top+1 == tmpIdx {
+			ls.push(val)
+		} else {
+			ls.data[tmpIdx] = val
+		}
 		return
 	}
-	ls.data[idx] = val
+	panic("set stack out of range!")
 }
 
 func (ls *luaStack) reverse(from, to int) {

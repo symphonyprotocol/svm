@@ -219,14 +219,7 @@ func (ls *LuaState) ToNumber(idx int) float64 {
 //ToNumberX idx value try convert to float64
 func (ls *LuaState) ToNumberX(idx int) (float64, bool) {
 	val := ls.stack.get(idx)
-	switch x := val.(type) {
-	case float64:
-		return x, true
-	case int64:
-		return float64(x), true
-	default:
-		return 0, false
-	}
+	return convertToFloat(val)
 }
 
 //ToInteger covert idx value to int64
@@ -238,8 +231,7 @@ func (ls *LuaState) ToInteger(idx int) int64 {
 //ToIntegerX try to covert idx value to int64
 func (ls *LuaState) ToIntegerX(idx int) (int64, bool) {
 	val := ls.stack.get(idx)
-	i, ok := val.(int64)
-	return i, ok
+	return converToInteger(val)
 }
 
 //ToString covert idx value to string
@@ -261,4 +253,219 @@ func (ls *LuaState) ToStringX(idx int) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+//Arith airthmetic method
+func (ls *LuaState) Arith(op AirthOp) {
+	var a, b luaValue
+	b = ls.stack.pop()
+	if op != operatorUnm && op != operatorBinNot {
+		a = ls.stack.pop()
+	} else {
+		a = b
+	}
+
+	operator := operators[op]
+	if result := doAirth(a, b, operator); result != nil {
+		ls.stack.push(result)
+	} else {
+		panic("arithmetic error!")
+	}
+}
+
+//Compare  compare two index value in stack
+func (ls *LuaState) Compare(idx1, idx2 int, op CompareOp) bool {
+	a := ls.stack.get(idx1)
+	b := ls.stack.get(idx2)
+	switch op {
+	case operatorEqual:
+		return doEqual(a, b)
+	case operatorLessThan:
+		return doLessThan(a, b)
+	case operatorLessEqual:
+		return doLessEqual(a, b)
+	default:
+		panic("invalid compare op!")
+	}
+}
+
+//Len get length of index value and push length to the stack top
+func (ls *LuaState) Len(idx int) {
+	val := ls.stack.get(idx)
+	if s, ok := val.(string); ok {
+		ls.stack.push(int64(len(s)))
+	} else if t, ok := val.(*luaTable); ok {
+		ls.stack.push(int64(t.len()))
+	} else {
+		panic("length error!")
+	}
+}
+
+//Concat pop top n value and concat them push back
+func (ls *LuaState) Concat(n int) {
+	if n == 0 {
+		ls.stack.push("")
+	} else if n >= 2 {
+		for i := 1; i < n; i++ {
+			if ls.IsString(-1) && ls.IsString(-2) {
+				strb := ls.ToString(-1)
+				stra := ls.ToString(-2)
+				ls.stack.pop()
+				ls.stack.pop()
+				ls.stack.push(stra + strb)
+				continue
+			}
+			panic("concatenation error!")
+		}
+	}
+}
+
+//NewTable create luaTable
+func (ls *LuaState) NewTable(arrayLen, mapCap int) {
+	t := newLuaTable(arrayLen, mapCap)
+	ls.stack.push(t)
+}
+
+//GetTable get luaTable from idx, push value into stack (key: top value of stack)
+func (ls *LuaState) GetTable(idx int) LuaType {
+	t := ls.stack.get(idx)
+	key := ls.stack.pop()
+	return ls.getTable(t, key)
+}
+
+func (ls *LuaState) getTable(t, k luaValue) LuaType {
+	if table, ok := t.(*luaTable); ok {
+		val := table.get(k)
+		ls.stack.push(val)
+		return typeOf(val)
+	}
+	panic("not a table")
+}
+
+//SetTable set table value
+func (ls *LuaState) SetTable(idx int) {
+	t := ls.stack.get(idx)
+	v := ls.stack.pop()
+	k := ls.stack.pop()
+	ls.setTable(t, k, v)
+}
+
+func (ls *LuaState) setTable(t, k, v luaValue) {
+	if table, ok := t.(*luaTable); ok {
+		table.set(k, v)
+		return
+	}
+	panic("not a table")
+}
+
+//SetI set key:i val:pop
+func (ls *LuaState) SetI(idx int, i int64) {
+	t := ls.stack.get(idx)
+	v := ls.stack.pop()
+	ls.setTable(t, i, v)
+}
+
+func doAirth(a, b luaValue, op operator) luaValue {
+	if op.floatFunc == nil {
+		if x, ok := converToInteger(a); ok {
+			if y, ok := converToInteger(b); ok {
+				return op.integerFunc(x, y)
+			}
+		}
+	} else {
+		if op.integerFunc != nil {
+			if x, ok := a.(int64); ok {
+				if y, ok := b.(int64); ok {
+					return op.integerFunc(x, y)
+				}
+			}
+		}
+		if x, ok := convertToFloat(a); ok {
+			if y, ok := convertToFloat(b); ok {
+				return op.floatFunc(x, y)
+			}
+		}
+	}
+	return nil
+}
+
+func doEqual(a, b luaValue) bool {
+	switch x := a.(type) {
+	case nil:
+		return b == nil
+	case bool:
+		y, ok := b.(bool)
+		return ok && x == y
+	case string:
+		y, ok := b.(string)
+		return ok && x == y
+	case int64:
+		switch y := b.(type) {
+		case int64:
+			return x == y
+		case float64:
+			return float64(x) == y
+		default:
+			return false
+		}
+	case float64:
+		switch y := b.(type) {
+		case float64:
+			return x == y
+		case int64:
+			return x == float64(y)
+		default:
+			return false
+		}
+	default:
+		return a == b
+	}
+}
+
+func doLessThan(a, b luaValue) bool {
+	switch x := a.(type) {
+	case string:
+		if y, ok := b.(string); ok {
+			return x < y
+		}
+	case int64:
+		switch y := b.(type) {
+		case int64:
+			return x < y
+		case float64:
+			return float64(x) < y
+		}
+	case float64:
+		switch y := b.(type) {
+		case float64:
+			return x < y
+		case int64:
+			return x < float64(y)
+		}
+	}
+	panic("comparison error!")
+}
+
+func doLessEqual(a, b luaValue) bool {
+	switch x := a.(type) {
+	case string:
+		if y, ok := b.(string); ok {
+			return x <= y
+		}
+	case int64:
+		switch y := b.(type) {
+		case int64:
+			return x <= y
+		case float64:
+			return float64(x) <= y
+		}
+	case float64:
+		switch y := b.(type) {
+		case float64:
+			return x <= y
+		case int64:
+			return x <= float64(y)
+		}
+	}
+	panic("comparison error!")
 }
