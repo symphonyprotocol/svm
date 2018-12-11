@@ -1,53 +1,11 @@
 package svm
 
 import (
-	"math"
+	"fmt"
 )
 
-const (
-	operatorAdd = iota
-	operatorSub
-	operatorMul
-	operatorMod
-	operatorPow
-	operatorDiv
-	operatorIDiv
-	operatorBinAnd
-	operatorBinOr
-	operatorBinXor
-	operatorShl
-	operatorShr
-	operatorUnm
-	operatorBinNot
-)
-
-const (
-	operatorEqual = iota
-	operatorLessThan
-	operatorLessEqual
-)
-
-type operator struct {
-	integerFunc func(int64, int64) int64
-	floatFunc   func(float64, float64) float64
-}
-
-var operators = []operator{
-	operator{func(a, b int64) int64 { return a + b }, func(a, b float64) float64 { return a + b }},
-	operator{func(a, b int64) int64 { return a - b }, func(a, b float64) float64 { return a - b }},
-	operator{func(a, b int64) int64 { return a * b }, func(a, b float64) float64 { return a * b }},
-	operator{intMod, floatMod},
-	operator{nil, math.Pow},
-	operator{nil, func(a, b float64) float64 { return a / b }},
-	operator{intFloorDiv, floatFloorDiv},
-	operator{func(a, b int64) int64 { return a & b }, nil},
-	operator{func(a, b int64) int64 { return a | b }, nil},
-	operator{func(a, b int64) int64 { return a ^ b }, nil},
-	operator{intShiftLeft, nil},
-	operator{intShiftRight, nil},
-	operator{func(a, _ int64) int64 { return -a }, func(a, _ float64) float64 { return -a }},
-	operator{func(a, _ int64) int64 { return ^a }, nil},
-}
+//GoFunction go function used in lua
+type GoFunction func(*LuaState) int
 
 //AirthOp airth operator
 type AirthOp = int
@@ -57,40 +15,63 @@ type CompareOp = int
 
 //LuaState lua state object
 type LuaState struct {
-	stack *luaStack
-	proto *LuaTrunkProto
-	pc    int
+	registry *luaTable
+	stack    *luaStack
+	isDebug  bool
 }
 
 //NewLuaState create a lua state object
-func NewLuaState(proto *LuaTrunkProto) *LuaState {
-	return &LuaState{
-		stack: newLuaStack(),
-		proto: proto,
-		pc:    0,
+func NewLuaState() *LuaState {
+	registery := newLuaTable(0, 0)
+	registery.set(luaRidxGlobals, newLuaTable(0, 0))
+	ls := &LuaState{registry: registery}
+	ls.pushLuaStack(newLuaStack(ls))
+	ls.isDebug = false
+	return ls
+}
+
+//SetDebug set debug flag
+func (ls *LuaState) SetDebug(debug bool) {
+	ls.isDebug = debug
+	ls.stack.setDebug(debug)
+}
+
+//RegisterCount get max stack size
+func (ls *LuaState) RegisterCount() int {
+	if ls.isDebug {
+		fmt.Println("maxStackSize:", ls.stack.closure.proto.MaxStackSize)
 	}
+	return int(ls.stack.closure.proto.MaxStackSize)
+}
+
+//LoadVararg load varargs
+func (ls *LuaState) LoadVararg(n int) {
+	if n < 0 {
+		n = len(ls.stack.varargs)
+	}
+	ls.stack.pushN(ls.stack.varargs, n)
 }
 
 //PC get current pc
 func (ls *LuaState) PC() int {
-	return ls.pc
+	return ls.stack.pc
 }
 
 //AddPC add pc for n count
 func (ls *LuaState) AddPC(n int) {
-	ls.pc += n
+	ls.stack.pc += n
 }
 
 //Fetch get current pc point to code
 func (ls *LuaState) Fetch() uint32 {
-	code := ls.proto.Code[ls.pc]
-	ls.pc++
+	code := ls.stack.closure.proto.Code[ls.stack.pc]
+	ls.stack.pc++
 	return code
 }
 
 //GetConst get constant value at idx and push it into stack
 func (ls *LuaState) GetConst(idx int) {
-	c := ls.proto.Constants[idx]
+	c := ls.stack.closure.proto.Constants[idx]
 	ls.stack.push(c)
 }
 

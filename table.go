@@ -4,15 +4,24 @@ import (
 	"math"
 )
 
+var tableSeq uint
+
 type luaTable struct {
-	array   []luaValue
-	hashmap map[luaValue]luaValue
+	id        uint
+	metatable *luaTable
+	array     []luaValue
+	hashmap   map[luaValue]luaValue
+	keys      map[luaValue]luaValue
+	lastKey   luaValue
+	changed   bool
 }
 
 func newLuaTable(arrayLen, mapCap int) *luaTable {
+	tableSeq++
 	t := &luaTable{}
+	t.id = tableSeq
 	if arrayLen > 0 {
-		t.array = make([]luaValue, arrayLen)
+		t.array = make([]luaValue, 0, arrayLen)
 	}
 	if mapCap > 0 {
 		t.hashmap = make(map[luaValue]luaValue, mapCap)
@@ -33,6 +42,7 @@ func (t *luaTable) get(key luaValue) luaValue {
 }
 
 func (t *luaTable) set(key, value luaValue) {
+	t.changed = true
 	switch idx := key.(type) {
 	case nil:
 		return
@@ -100,4 +110,38 @@ func (t *luaTable) expandArray() {
 			break
 		}
 	}
+}
+
+func (t *luaTable) hasMetafield(fieldName string) bool {
+	return t.metatable != nil && t.metatable.get(fieldName) != nil
+}
+
+func (t *luaTable) initKeys() {
+	t.keys = make(map[luaValue]luaValue)
+	var key luaValue
+	for i, v := range t.array {
+		if v != nil {
+			t.keys[key] = int64(i)
+			key = int64(i)
+		}
+	}
+	for k, v := range t.hashmap {
+		if v != nil {
+			t.keys[key] = k
+			key = k
+		}
+	}
+	t.lastKey = key
+}
+
+func (t *luaTable) nextKey(key luaValue) luaValue {
+	if t.keys == nil || (key == nil && t.changed) {
+		t.initKeys()
+		t.changed = false
+	}
+	nextKey := t.keys[key]
+	if nextKey == nil && key != nil && key != t.lastKey {
+		panic("invalid key to next")
+	}
+	return nextKey
 }

@@ -102,110 +102,57 @@ type opcode struct {
 	testFlag byte
 	opMode   byte
 	name     string
-	action   func(i Instruction, ls *LuaState)
+	//action   func(i Instruction, ls *LuaState)
+	opType int
 }
 
 var opcodes = []opcode{
 	//     T   mode      name
-	opcode{0, modeIABC, "MOVE", moveOP},
-	opcode{0, modeIABx, "LOADK", loadKOP},
-	opcode{0, modeIABx, "LOADKX", loadKxOP},
-	opcode{0, modeIABC, "LOADBOOL", loadBoolOP},
-	opcode{0, modeIABC, "LOADNIL", loadNilOP},
-	opcode{0, modeIABC, "GETUPVAL", nil},
-	opcode{0, modeIABC, "GETTABUP", nil},
-	opcode{0, modeIABC, "GETTABLE", getTable},
-	opcode{0, modeIABC, "SETTABUP", nil},
-	opcode{0, modeIABC, "SETUPVAL", nil},
-	opcode{0, modeIABC, "SETTABLE", setTable},
-	opcode{0, modeIABC, "NEWTABLE", newTable},
-	opcode{0, modeIABC, "SELF", nil},
-	opcode{0, modeIABC, "ADD", addOP},
-	opcode{0, modeIABC, "SUB", subOP},
-	opcode{0, modeIABC, "MUL", mulOP},
-	opcode{0, modeIABC, "MOD", modOP},
-	opcode{0, modeIABC, "POW", powOP},
-	opcode{0, modeIABC, "DIV", divOP},
-	opcode{0, modeIABC, "IDIV", idivOP},
-	opcode{0, modeIABC, "BAND", binandOP},
-	opcode{0, modeIABC, "BOR", binorOP},
-	opcode{0, modeIABC, "BXOR", binxorOP},
-	opcode{0, modeIABC, "SHL", shlOP},
-	opcode{0, modeIABC, "SHR", shrOP},
-	opcode{0, modeIABC, "UNM", unmOP},
-	opcode{0, modeIABC, "BNOT", binnotOP},
-	opcode{0, modeIABC, "NOT", notOP},
-	opcode{0, modeIABC, "LEN", lenOP},
-	opcode{0, modeIABC, "CONCAT", concatOP},
-	opcode{0, modeIAsBx, "JMP", jmpOP},
-	opcode{0, modeIABC, "EQ", equalOP},
-	opcode{0, modeIABC, "LT", lessThanOP},
-	opcode{0, modeIABC, "LE", lessEqualOP},
-	opcode{0, modeIABC, "TEST", testOP},
-	opcode{0, modeIABC, "TESTSET", testSetOP},
-	opcode{0, modeIABC, "CALL", nil},
-	opcode{0, modeIABC, "TAILCALL", nil},
-	opcode{0, modeIABC, "RETURN", nil},
-	opcode{0, modeIAsBx, "FORLOOP", forLoopOP},
-	opcode{0, modeIAsBx, "FORPREP", forPrepOP},
-	opcode{0, modeIABC, "TFORCALL", nil},
-	opcode{0, modeIAsBx, "TFORLOOP", nil},
-	opcode{0, modeIABC, "SETLIST", setList},
-	opcode{0, modeIABx, "CLOSURE", nil},
-	opcode{0, modeIABC, "VARARG", nil},
-	opcode{0, modeIAx, "EXTRAARG", nil},
-}
-
-//Instruction code
-type Instruction uint32
-
-//Opcode get opcode
-func (i Instruction) Opcode() int {
-	return int(i & 0x3F)
-}
-
-//ABC get IABC arguments
-func (i Instruction) ABC() (a, b, c int) {
-	a = int(i >> 6 & 0xFF)
-	c = int(i >> 14 & 0x1FF)
-	b = int(i >> 23 & 0x1FF)
-	return
-}
-
-//ABx get IAbx arguments
-func (i Instruction) ABx() (a, bx int) {
-	a = int(i >> 6 & 0xFF)
-	bx = int(i >> 14)
-	return
-}
-
-//AsBx get IAsBx arguments
-func (i Instruction) AsBx() (a, sbx int) {
-	a, bx := i.ABx()
-	return a, bx - maxArgSBx
-}
-
-//Ax get IAx arguments
-func (i Instruction) Ax() int {
-	return int(i >> 6)
-}
-
-//OpName get op name
-func (i Instruction) OpName() string {
-	return opcodes[i.Opcode()].name
-}
-
-//OpMode get op mode
-func (i Instruction) OpMode() byte {
-	return opcodes[i.Opcode()].opMode
-}
-
-//Execute execute instruction
-func (i Instruction) Execute(ls *LuaState) {
-	action := opcodes[i.Opcode()].action
-	if action != nil {
-		action(i, ls)
-	} else {
-		panic(i.OpName())
-	}
+	opcode{0, modeIABC, "MOVE", opMove},
+	opcode{0, modeIABx, "LOADK", opLoadK},
+	opcode{0, modeIABx, "LOADKX", opLoadKx},
+	opcode{0, modeIABC, "LOADBOOL", opLoadBool},
+	opcode{0, modeIABC, "LOADNIL", opLoadNil},
+	opcode{0, modeIABC, "GETUPVAL", opGetUpvalue},
+	opcode{0, modeIABC, "GETTABUP", opGetTableUp},
+	opcode{0, modeIABC, "GETTABLE", opGetTable},
+	opcode{0, modeIABC, "SETTABUP", opSetTableUp},
+	opcode{0, modeIABC, "SETUPVAL", opSetUpvalue},
+	opcode{0, modeIABC, "SETTABLE", opSetTable},
+	opcode{0, modeIABC, "NEWTABLE", opNewTable},
+	opcode{0, modeIABC, "SELF", opSelf},
+	opcode{0, modeIABC, "ADD", opAdd},
+	opcode{0, modeIABC, "SUB", opSub},
+	opcode{0, modeIABC, "MUL", opMul},
+	opcode{0, modeIABC, "MOD", opMod},
+	opcode{0, modeIABC, "POW", opPow},
+	opcode{0, modeIABC, "DIV", opDiv},
+	opcode{0, modeIABC, "IDIV", opIDiv},
+	opcode{0, modeIABC, "BAND", opBinAnd},
+	opcode{0, modeIABC, "BOR", opBinOr},
+	opcode{0, modeIABC, "BXOR", opBinXor},
+	opcode{0, modeIABC, "SHL", opBinShiftL},
+	opcode{0, modeIABC, "SHR", opBinShiftR},
+	opcode{0, modeIABC, "UNM", opUminus},
+	opcode{0, modeIABC, "BNOT", opBinNot},
+	opcode{0, modeIABC, "NOT", opNot},
+	opcode{0, modeIABC, "LEN", opLength},
+	opcode{0, modeIABC, "CONCAT", opConcat},
+	opcode{0, modeIAsBx, "JMP", opJump},
+	opcode{0, modeIABC, "EQ", opEqual},
+	opcode{0, modeIABC, "LT", opLessThan},
+	opcode{0, modeIABC, "LE", opLessEqual},
+	opcode{0, modeIABC, "TEST", opTest},
+	opcode{0, modeIABC, "TESTSET", opTestSet},
+	opcode{0, modeIABC, "CALL", opCall},
+	opcode{0, modeIABC, "TAILCALL", opTailCall},
+	opcode{0, modeIABC, "RETURN", opReturn},
+	opcode{0, modeIAsBx, "FORLOOP", opForLoop},
+	opcode{0, modeIAsBx, "FORPREP", opForPrep},
+	opcode{0, modeIABC, "TFORCALL", opTForCall},
+	opcode{0, modeIAsBx, "TFORLOOP", opTForLoop},
+	opcode{0, modeIABC, "SETLIST", opSetList},
+	opcode{0, modeIABx, "CLOSURE", opClosure},
+	opcode{0, modeIABC, "VARARG", opVarArg},
+	opcode{0, modeIAx, "EXTRAARG", opExtraArg},
 }

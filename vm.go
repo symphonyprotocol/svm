@@ -11,7 +11,7 @@ func jmpOP(i Instruction, ls *LuaState) {
 	a, sBx := i.AsBx()
 	ls.AddPC(sBx)
 	if a != 0 {
-		panic("todo!")
+		ls.closeUpvalues(a)
 	}
 }
 
@@ -201,32 +201,38 @@ func binnotOP(i Instruction, ls *LuaState) {
 	unaryArith(i, ls, operatorBinNot)
 }
 
-func newTable(i Instruction, ls *LuaState) {
+func newTableOP(i Instruction, ls *LuaState) {
 	a, b, c := i.ABC()
 	ls.NewTable(floatPointByteToInt(b), floatPointByteToInt(c))
 	ls.Replace(a)
 }
 
-func getTable(i Instruction, ls *LuaState) {
+func getTableOP(i Instruction, ls *LuaState) {
 	a, b, c := i.ABC()
 	ls.GetRK(c)
 	ls.GetTable(b)
 	ls.Replace(a)
 }
 
-func setTable(i Instruction, ls *LuaState) {
+func setTableOP(i Instruction, ls *LuaState) {
 	a, b, c := i.ABC()
 	ls.GetRK(b)
 	ls.GetRK(c)
 	ls.SetTable(a)
 }
 
-func setList(i Instruction, ls *LuaState) {
+func setListOP(i Instruction, ls *LuaState) {
 	a, b, c := i.ABC()
 	if c > 0 {
 		c = c - 1
 	} else {
 		c = Instruction(ls.Fetch()).Ax()
+	}
+
+	bIsZero := b == 0
+	if bIsZero {
+		b = int(ls.ToInteger(-1)) - a - 1
+		ls.Pop(1)
 	}
 
 	idx := int64(c * fieldsPerFlush)
@@ -235,4 +241,143 @@ func setList(i Instruction, ls *LuaState) {
 		ls.PushValue(a + j)
 		ls.SetI(a, idx)
 	}
+
+	if bIsZero {
+		for j := ls.RegisterCount(); j <= ls.GetTopIndex(); j++ {
+			idx++
+			ls.PushValue(j)
+			ls.SetI(a, idx)
+		}
+
+		// clear stack
+		ls.SetTop(ls.RegisterCount() - 1)
+	}
+}
+
+func closureOP(i Instruction, ls *LuaState) {
+	a, bx := i.ABx()
+	ls.LoadProto(bx)
+	ls.Replace(a)
+}
+
+func callOP(i Instruction, ls *LuaState) {
+	a, b, c := i.ABC()
+	//ls.RemoveNilTail()
+	nArgs := pushFuncAndArgs(a, b, ls)
+	ls.Call(nArgs, c-1)
+	popResults(a, c, ls)
+}
+
+func returnOP(i Instruction, ls *LuaState) {
+	a, b, _ := i.ABC()
+	//ls.RemoveNilTail()
+	if b == 1 {
+		//no results
+	} else if b > 1 {
+		for i := a; i <= a+b-2; i++ {
+			ls.PushValue(i)
+		}
+	} else {
+		fixStack(a, ls)
+	}
+}
+
+func varargOP(i Instruction, ls *LuaState) {
+	a, b, _ := i.ABC()
+	if b != 1 {
+		ls.LoadVararg(b - 1)
+		popResults(a, b, ls)
+	}
+}
+
+func tailCallOP(i Instruction, ls *LuaState) {
+	a, b, _ := i.ABC()
+	c := 0
+	nArgs := pushFuncAndArgs(a, b, ls)
+	ls.Call(nArgs, c-1)
+	popResults(a, c, ls)
+}
+
+func selfOP(i Instruction, ls *LuaState) {
+	a, b, c := i.ABC()
+	ls.Copy(b, a+1)
+	ls.GetRK(c)
+	ls.GetTable(b)
+	ls.Replace(a)
+}
+
+func setUpvalOP(i Instruction, ls *LuaState) {
+	a, b, _ := i.ABC()
+	ls.Copy(a, luaUpvalueIndex(b))
+}
+
+func getUpvalOP(i Instruction, ls *LuaState) {
+	a, b, _ := i.ABC()
+	ls.Copy(luaUpvalueIndex(b), a)
+}
+
+func getTabupOP(i Instruction, ls *LuaState) {
+	a, b, c := i.ABC()
+	ls.GetRK(c)
+	ls.GetTable(luaUpvalueIndex(b))
+	ls.Replace(a)
+}
+
+func setTabupOP(i Instruction, ls *LuaState) {
+	a, b, c := i.ABC()
+	ls.GetRK(b)
+	ls.GetRK(c)
+	ls.SetTable(luaUpvalueIndex(a))
+}
+
+func tForCallOP(i Instruction, ls *LuaState) {
+	a, _, c := i.ABC()
+	pushFuncAndArgs(a, 3, ls)
+	ls.Call(2, c)
+	popResults(a+3, c+1, ls)
+}
+
+func tForLoopOP(i Instruction, ls *LuaState) {
+	a, sBx := i.AsBx()
+	if !ls.IsNil(a + 1) {
+		ls.Copy(a+1, a)
+		ls.AddPC(sBx)
+	}
+}
+
+func pushFuncAndArgs(a, b int, ls *LuaState) (nArgs int) {
+	if b >= 1 {
+		for i := a; i < a+b; i++ {
+			ls.PushValue(i)
+		}
+		return b - 1
+	}
+	fixStack(a, ls)
+	return ls.GetTopIndex() - ls.RegisterCount()
+}
+
+func popResults(a, c int, ls *LuaState) {
+	if c == 1 {
+		//no results
+	} else if c > 1 {
+		for i := a + c - 2; i >= a; i-- {
+			ls.Replace(i)
+		}
+	} else {
+		ls.PushInteger(int64(a))
+	}
+}
+
+func fixStack(a int, ls *LuaState) {
+	x := int(ls.ToInteger(-1))
+	ls.Pop(1)
+
+	for i := a; i < x; i++ {
+		ls.PushValue(i)
+	}
+	ls.Rotate(ls.RegisterCount(), x-a)
+}
+
+func luaUpvalueIndex(i int) int {
+	return luaRegisteryIndex - i - 1
 }

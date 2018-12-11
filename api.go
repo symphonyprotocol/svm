@@ -1,20 +1,8 @@
 package svm
 
 import (
+	"bytes"
 	"fmt"
-)
-
-const (
-	LuaTypeNone = iota
-	LuaTypeNil
-	LuaTypeBoolean
-	LuaTypeLightUserData
-	LuaTypeNumber
-	LuaTypeString
-	LuaTypeTable
-	LuaTypeFunction
-	LuaTypeUserData
-	LuaTypeThread
 )
 
 //LuaType lua type structure
@@ -108,44 +96,17 @@ func (ls *LuaState) Rotate(idx, n int) {
 
 //SetTop set idx to the new top of the stack
 func (ls *LuaState) SetTop(idx int) {
-	top := ls.stack.absIndex(idx)
-	if top < 0 {
-		panic("stack underflow!")
-	}
-	n := ls.stack.topIndex() - top
-	if n > 0 {
-		for i := 0; i < n; i++ {
-			ls.stack.pop()
-		}
-	} else if n < 0 {
-		for i := 0; i > n; i-- {
-			ls.stack.push(nil)
-		}
-	}
+	ls.stack.setTop(idx)
+}
+
+//RemoteNilTail remove nil tail before call
+func (ls *LuaState) RemoveNilTail() {
+	ls.stack.removeNilTail()
 }
 
 //TypeName return lua type name
 func (ls *LuaState) TypeName(tp LuaType) string {
-	switch tp {
-	case LuaTypeNone:
-		return "no value"
-	case LuaTypeNil:
-		return "nil"
-	case LuaTypeBoolean:
-		return "boolean"
-	case LuaTypeNumber:
-		return "number"
-	case LuaTypeString:
-		return "string"
-	case LuaTypeTable:
-		return "table"
-	case LuaTypeFunction:
-		return "function"
-	case LuaTypeThread:
-		return "thread"
-	default:
-		return "userdata"
-	}
+	return typeName(tp)
 }
 
 //Type return index value's lua type
@@ -268,9 +229,14 @@ func (ls *LuaState) Arith(op AirthOp) {
 	operator := operators[op]
 	if result := doAirth(a, b, operator); result != nil {
 		ls.stack.push(result)
-	} else {
-		panic("arithmetic error!")
+		return
 	}
+	mm := operator.metamethod
+	if result, ok := callMetamethod(a, b, mm, ls); ok {
+		ls.stack.push(result)
+		return
+	}
+	panic("airthmetic error!")
 }
 
 //Compare  compare two index value in stack
@@ -279,11 +245,11 @@ func (ls *LuaState) Compare(idx1, idx2 int, op CompareOp) bool {
 	b := ls.stack.get(idx2)
 	switch op {
 	case operatorEqual:
-		return doEqual(a, b)
+		return doEqual(a, b, ls)
 	case operatorLessThan:
-		return doLessThan(a, b)
+		return doLessThan(a, b, ls)
 	case operatorLessEqual:
-		return doLessEqual(a, b)
+		return doLessEqual(a, b, ls)
 	default:
 		panic("invalid compare op!")
 	}
@@ -294,6 +260,8 @@ func (ls *LuaState) Len(idx int) {
 	val := ls.stack.get(idx)
 	if s, ok := val.(string); ok {
 		ls.stack.push(int64(len(s)))
+	} else if result, ok := callMetamethod(val, val, "__len", ls); ok {
+		ls.stack.push(result)
 	} else if t, ok := val.(*luaTable); ok {
 		ls.stack.push(int64(t.len()))
 	} else {
@@ -315,6 +283,12 @@ func (ls *LuaState) Concat(n int) {
 				ls.stack.push(stra + strb)
 				continue
 			}
+			b := ls.stack.pop()
+			a := ls.stack.pop()
+			if result, ok := callMetamethod(a, b, "__concat", ls); ok {
+				ls.stack.push(result)
+				continue
+			}
 			panic("concatenation error!")
 		}
 	}
@@ -330,14 +304,31 @@ func (ls *LuaState) NewTable(arrayLen, mapCap int) {
 func (ls *LuaState) GetTable(idx int) LuaType {
 	t := ls.stack.get(idx)
 	key := ls.stack.pop()
-	return ls.getTable(t, key)
+	return ls.getTable(t, key, false)
 }
 
-func (ls *LuaState) getTable(t, k luaValue) LuaType {
+func (ls *LuaState) getTable(t, k luaValue, raw bool) LuaType {
 	if table, ok := t.(*luaTable); ok {
 		val := table.get(k)
-		ls.stack.push(val)
-		return typeOf(val)
+		if raw || val != nil || !table.hasMetafield("__index") {
+			ls.stack.push(val)
+			return typeOf(val)
+		}
+	}
+	if !raw {
+		if mf := getMetafield(t, "__index", ls); mf != nil {
+			switch x := mf.(type) {
+			case *luaTable:
+				return ls.getTable(x, k, false)
+			case *luaClosure:
+				ls.stack.push(mf)
+				ls.stack.push(t)
+				ls.stack.push(k)
+				ls.Call(2, 1)
+				v := ls.stack.get(-1)
+				return typeOf(v)
+			}
+		}
 	}
 	panic("not a table")
 }
@@ -347,22 +338,314 @@ func (ls *LuaState) SetTable(idx int) {
 	t := ls.stack.get(idx)
 	v := ls.stack.pop()
 	k := ls.stack.pop()
-	ls.setTable(t, k, v)
+	ls.setTable(t, k, v, false)
 }
 
-func (ls *LuaState) setTable(t, k, v luaValue) {
+func (ls *LuaState) setTable(t, k, v luaValue, raw bool) {
 	if table, ok := t.(*luaTable); ok {
-		table.set(k, v)
-		return
+		if raw || table.get(k) != nil || !table.hasMetafield("__newindex") {
+			table.set(k, v)
+			return
+		}
+	}
+	if !raw {
+		if mf := getMetafield(t, "__newindex", ls); mf != nil {
+			switch x := mf.(type) {
+			case *luaTable:
+				ls.setTable(x, k, v, false)
+				return
+			case *luaClosure:
+				ls.stack.push(mf)
+				ls.stack.push(t)
+				ls.stack.push(k)
+				ls.stack.push(v)
+				ls.Call(3, 0)
+				return
+			}
+		}
 	}
 	panic("not a table")
+}
+
+//SetField set table key value
+func (ls *LuaState) SetField(idx int, k string) {
+	t := ls.stack.get(idx)
+	v := ls.stack.pop()
+	ls.setTable(t, k, v, false)
 }
 
 //SetI set key:i val:pop
 func (ls *LuaState) SetI(idx int, i int64) {
 	t := ls.stack.get(idx)
 	v := ls.stack.pop()
-	ls.setTable(t, i, v)
+	ls.setTable(t, i, v, false)
+}
+
+//GetI get key:i from table
+func (ls *LuaState) GetI(idx int, i int64) LuaType {
+	t := ls.stack.get(idx)
+	return ls.getTable(t, i, false)
+}
+
+//Load load binary code to the stack
+func (ls *LuaState) Load(chunk []byte, chunkName, mode string) int {
+	reader := bytes.NewReader(chunk)
+	proto := Undump(reader)
+	c := newLuaClosure(proto)
+	ls.stack.push(c)
+	if len(proto.Upvalues) > 0 {
+		env := ls.registry.get(luaRidxGlobals)
+		c.upvals[0] = &luaUpvalue{&env}
+	}
+	return 0
+}
+
+//LoadProto load proto
+func (ls *LuaState) LoadProto(idx int) {
+	proto := ls.stack.closure.proto.Protos[idx]
+	c := newLuaClosure(proto)
+	ls.stack.push(c)
+	for i, uvInfo := range proto.Upvalues {
+		uvIdx := int(uvInfo.Idx)
+		if uvInfo.InStack == 1 {
+			if ls.stack.openuvs == nil {
+				ls.stack.openuvs = make(map[int]*luaUpvalue)
+			}
+			if openuv, found := ls.stack.openuvs[uvIdx]; found {
+				c.upvals[i] = openuv
+			} else {
+				c.upvals[i] = &luaUpvalue{&ls.stack.data[uvIdx]}
+				ls.stack.openuvs[uvIdx] = c.upvals[i]
+			}
+		} else {
+			c.upvals[i] = ls.stack.closure.upvals[uvIdx]
+		}
+	}
+}
+
+//Call call function in stack
+func (ls *LuaState) Call(nArgs, nResults int) {
+	value := ls.stack.get(-(nArgs + 1))
+	c, ok := value.(*luaClosure)
+	if !ok {
+		if mf := getMetafield(value, "__call", ls); mf != nil {
+			if c, ok = mf.(*luaClosure); ok {
+				ls.stack.push(value)
+				ls.Insert(-(nArgs + 2))
+				nArgs++
+			}
+		}
+	}
+	if ok {
+		//fmt.Printf("call %s<%d, %d>\n", c.proto.Source, c.proto.LineDefined, c.proto.LastLineDefined)
+		if c.proto != nil {
+			ls.callLuaClosure(nArgs, nResults, c)
+		} else {
+			ls.callGoClosure(nArgs, nResults, c)
+		}
+	} else {
+		panic("not a function!")
+	}
+}
+
+func (ls *LuaState) callLuaClosure(nArgs, nResults int, c *luaClosure) {
+	nRegs := int(c.proto.MaxStackSize)
+	nParams := int(c.proto.NumParam)
+	isVararg := c.proto.IsVararg == 1
+	newStack := newLuaStack(ls)
+	newStack.closure = c
+	newStack.setDebug(ls.isDebug)
+	funcAndArgs := ls.stack.popN(nArgs + 1)
+	newStack.pushN(funcAndArgs[1:], nParams)
+	newStack.setTop(nRegs - 1)
+	if nArgs > nParams && isVararg {
+		newStack.varargs = funcAndArgs[nParams+1:]
+	}
+	ls.pushLuaStack(newStack)
+	ls.runLuaClosure()
+	ls.popLuaStack()
+	if nResults != 0 {
+		results := newStack.popN(newStack.topIndex() - nRegs + 1)
+		ls.stack.pushN(results, nResults)
+	}
+}
+
+func (ls *LuaState) runLuaClosure() {
+	for {
+		inst := Instruction(ls.Fetch())
+		inst.Execute(ls)
+		if inst.Opcode() == opReturn {
+			break
+		}
+	}
+}
+
+func (ls *LuaState) callGoClosure(nArgs, nResults int, c *luaClosure) {
+	newStack := newLuaStack(ls)
+	newStack.closure = c
+	newStack.setDebug(ls.isDebug)
+	args := ls.stack.popN(nArgs)
+	newStack.pushN(args, nArgs)
+	ls.stack.pop()
+	ls.pushLuaStack(newStack)
+	r := c.goFunc(ls)
+	ls.popLuaStack()
+	if nResults != 0 {
+		results := newStack.popN(r)
+		ls.stack.pushN(results, nResults)
+	}
+}
+
+func (ls *LuaState) pushLuaStack(stack *luaStack) {
+	stack.prev = ls.stack
+	ls.stack = stack
+}
+
+func (ls *LuaState) popLuaStack() {
+	stack := ls.stack
+	ls.stack = stack.prev
+	stack.prev = nil
+}
+
+func (ls *LuaState) pushGoFunction(f GoFunction) {
+	ls.stack.push(newGoClosure(f, 0))
+}
+
+//PushGoFunction push go function to the stack
+func (ls *LuaState) PushGoFunction(f GoFunction) {
+	ls.stack.push(newGoClosure(f, 0))
+}
+
+func (ls *LuaState) isGoFunction(idx int) bool {
+	val := ls.stack.get(idx)
+	if c, ok := val.(*luaClosure); ok {
+		return c.goFunc != nil
+	}
+	return false
+}
+
+func (ls *LuaState) toGoFunction(idx int) GoFunction {
+	val := ls.stack.get(idx)
+	if c, ok := val.(*luaClosure); ok {
+		return c.goFunc
+	}
+	return nil
+}
+
+func (ls *LuaState) pushGoClosure(f GoFunction, n int) {
+	c := newGoClosure(f, n)
+	for i := n; i > 0; i-- {
+		val := ls.stack.pop()
+		c.upvals[n-1] = &luaUpvalue{&val}
+	}
+	ls.stack.push(c)
+}
+
+func (ls *LuaState) pushGlobalTable() {
+	global := ls.registry.get(luaRidxGlobals)
+	ls.stack.push(global)
+}
+
+func (ls *LuaState) getGlobal(name string) LuaType {
+	t := ls.registry.get(luaRidxGlobals)
+	return ls.getTable(t, name, false)
+}
+
+func (ls *LuaState) setGlobal(name string) {
+	t := ls.registry.get(luaRidxGlobals)
+	v := ls.stack.pop()
+	ls.setTable(t, name, v, false)
+}
+
+//Register regisger go function to lua
+func (ls *LuaState) Register(name string, f GoFunction) {
+	ls.pushGoFunction(f)
+	ls.setGlobal(name)
+}
+
+func (ls *LuaState) closeUpvalues(a int) {
+	for i, openuv := range ls.stack.openuvs {
+		if i >= a-1 {
+			val := *openuv.val
+			openuv.val = &val
+			delete(ls.stack.openuvs, i)
+		}
+	}
+}
+
+//GetMetaTable stack getMetatable
+func (ls *LuaState) GetMetaTable(idx int) bool {
+	val := ls.stack.get(idx)
+	if mt := getMetatable(val, ls); mt != nil {
+		ls.stack.push(mt)
+		return true
+	}
+	return false
+}
+
+//SetMetatable stack seMetatable
+func (ls *LuaState) SetMetatable(idx int) {
+	val := ls.stack.get(idx)
+	mtVal := ls.stack.pop()
+	if mtVal == nil {
+		setMetatable(val, nil, ls)
+	} else if mt, ok := mtVal.(*luaTable); ok {
+		setMetatable(val, mt, ls)
+	} else {
+		panic("table expected")
+	}
+}
+
+//RawEqual metatable equal
+func (ls *LuaState) RawEqual(idx1, idx2 int) bool {
+	if !ls.stack.isValid(idx1) || !ls.stack.isValid(idx2) {
+		return false
+	}
+
+	a := ls.stack.get(idx1)
+	b := ls.stack.get(idx2)
+	return doEqual(a, b, nil)
+}
+
+//RawLen metatable len
+func (ls *LuaState) RawLen(idx int) uint {
+	val := ls.stack.get(idx)
+	switch x := val.(type) {
+	case string:
+		return uint(len(x))
+	case *luaTable:
+		return uint(x.len())
+	default:
+		return 0
+	}
+}
+
+//RawGet metatable get
+func (ls *LuaState) RawGet(idx int) LuaType {
+	t := ls.stack.get(idx)
+	k := ls.stack.pop()
+	return ls.getTable(t, k, true)
+}
+
+//RawGetI metatable geti
+func (ls *LuaState) RawGetI(idx int, i int64) LuaType {
+	t := ls.stack.get(idx)
+	return ls.getTable(t, i, true)
+}
+
+//RawSet metatable set
+func (ls *LuaState) RawSet(idx int) {
+	t := ls.stack.get(idx)
+	v := ls.stack.pop()
+	k := ls.stack.pop()
+	ls.setTable(t, k, v, true)
+}
+
+//RawSetI metatable seti
+func (ls *LuaState) RawSetI(idx int, i int64) {
+	t := ls.stack.get(idx)
+	v := ls.stack.pop()
+	ls.setTable(t, i, v, true)
 }
 
 func doAirth(a, b luaValue, op operator) luaValue {
@@ -389,7 +672,48 @@ func doAirth(a, b luaValue, op operator) luaValue {
 	return nil
 }
 
-func doEqual(a, b luaValue) bool {
+//Next next iterator
+func (ls *LuaState) Next(idx int) bool {
+	val := ls.stack.get(idx)
+	if t, ok := val.(*luaTable); ok {
+		key := ls.stack.pop()
+		if nexKey := t.nextKey(key); nexKey != nil {
+			ls.stack.push(nexKey)
+			ls.stack.push(t.get(nexKey))
+			return true
+		}
+		return false
+	}
+	panic("table expected")
+}
+
+//Error raise error
+func (ls *LuaState) Error() int {
+	err := ls.stack.pop()
+	panic(err)
+}
+
+//PCall pcall for error exception
+func (ls *LuaState) PCall(nArgs, nResults, msgh int) (status int) {
+	caller := ls.stack
+	status = LuaFuncErrRun
+	defer func() {
+		if err := recover(); err != nil {
+			if msgh != 0 {
+				panic(err)
+			}
+			for ls.stack != caller {
+				ls.popLuaStack()
+			}
+			ls.stack.push(err)
+		}
+	}()
+	ls.Call(nArgs, nResults)
+	status = LuaFuncOK
+	return
+}
+
+func doEqual(a, b luaValue, ls *LuaState) bool {
 	switch x := a.(type) {
 	case nil:
 		return b == nil
@@ -417,12 +741,19 @@ func doEqual(a, b luaValue) bool {
 		default:
 			return false
 		}
+	case *luaTable:
+		if y, ok := b.(*luaTable); ok && x != y && ls != nil {
+			if result, ok := callMetamethod(x, y, "__eq", ls); ok {
+				return covertToBoolean(result)
+			}
+		}
+		return a == b
 	default:
 		return a == b
 	}
 }
 
-func doLessThan(a, b luaValue) bool {
+func doLessThan(a, b luaValue, ls *LuaState) bool {
 	switch x := a.(type) {
 	case string:
 		if y, ok := b.(string); ok {
@@ -443,10 +774,13 @@ func doLessThan(a, b luaValue) bool {
 			return x < float64(y)
 		}
 	}
+	if result, ok := callMetamethod(a, b, "__lt", ls); ok {
+		return covertToBoolean(result)
+	}
 	panic("comparison error!")
 }
 
-func doLessEqual(a, b luaValue) bool {
+func doLessEqual(a, b luaValue, ls *LuaState) bool {
 	switch x := a.(type) {
 	case string:
 		if y, ok := b.(string); ok {
@@ -466,6 +800,11 @@ func doLessEqual(a, b luaValue) bool {
 		case int64:
 			return x <= float64(y)
 		}
+	}
+	if result, ok := callMetamethod(a, b, "__le", ls); ok {
+		return covertToBoolean(result)
+	} else if result, ok := callMetamethod(b, a, "__lt", ls); ok {
+		return !covertToBoolean(result)
 	}
 	panic("comparison error!")
 }

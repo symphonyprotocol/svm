@@ -27,17 +27,17 @@ func floatMod(a, b float64) float64 {
 func intShiftLeft(a, n int64) int64 {
 	if n >= 0 {
 		return a << uint64(n)
-	} else {
-		return intShiftRight(a, -n)
 	}
+	return intShiftRight(a, -n)
+
 }
 
 func intShiftRight(a, n int64) int64 {
 	if n >= 0 {
 		return int64(uint64(a) >> uint64(n))
-	} else {
-		return intShiftRight(a, -n)
 	}
+	return intShiftRight(a, -n)
+
 }
 
 func floatToInteger(f float64) (int64, bool) {
